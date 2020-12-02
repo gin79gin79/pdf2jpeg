@@ -148,12 +148,18 @@ int main(int argc, char** argv)
     for(const auto& folder: input_folders)
         scan_folder_for_pdf(folder, pdf_files, follow_symlink);
 
+    //Stuff for threads managment
     std::mutex threads_sync;
     std::condition_variable threads_cv;
-    size_t threads_count = 0, threads_max = std::thread::hardware_concurrency();
+    size_t threads_count = 0;
+
+    //Get hardware threads to set the maximum threads to run
+    size_t threads_max = std::thread::hardware_concurrency();
     if( not threads_max )
         threads_max = 4;
 
+    //Procedure to convert and store one page
+    //Will be run in working threads
     auto convert_proc = [&threads_sync, &threads_cv, &threads_count, img_type, img_dpi, verbose]
         (pl::document_ptr doc_ptr, int i, fs::path img_name) -> void
     {
@@ -177,11 +183,14 @@ int main(int argc, char** argv)
         threads_cv.notify_one();
     };
 
+    //Main loop through the pdf files found
     for(const auto& pdf: pdf_files) {
         if( verbose ) {
             std::unique_lock<std::mutex> lock(threads_sync);
             cout << "Start: " << pdf.native() << endl;
         }
+
+        //Reading the pdf file
         pl::document_ptr doc_ptr( pl::document::load_from_file( pdf.native() ) );
 
         if( not doc_ptr ) {
@@ -193,6 +202,7 @@ int main(int argc, char** argv)
         dest_dir_name /= pdf.filename();
         dest_dir_name.replace_extension("");
         
+        //Create a folder to store pdf file`s pages
         fs::create_directory( dest_dir_name );
         
         for(int i = 0; i < doc_ptr->pages(); ++i) {
@@ -204,10 +214,12 @@ int main(int argc, char** argv)
             threads_cv.wait(lock, [&threads_count, &threads_max] { return threads_count < threads_max; } );
             
             std::thread convert_task(convert_proc, doc_ptr, i, img_name);
+            //Dont want the thread`s ownership. So, dettach it.
             convert_task.detach();
         }
         doc_ptr.reset();
     }
+    //Wait last threads to finish
     std::unique_lock<std::mutex> lock(threads_sync);
     threads_cv.wait(lock, [&threads_count] { return threads_count == 0; } );
 
